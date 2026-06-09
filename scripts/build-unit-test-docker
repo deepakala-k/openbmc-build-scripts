@@ -235,7 +235,21 @@ packages = {
         build_type="autogen",
         config_flags=["--enable-bindings-cxx"],
     ),
-    "open-power/pdbg": PackageDef(build_type="autoconf"),
+    "hostfw-src/phal": PackageDef(
+        url=(
+            lambda pkg, rev: f"https://github.ibm.com/open-power/hostfw-src/archive/{rev}.tar.gz"
+        ),
+        build_type="custom",
+        depends=[
+            "nlohmann/json",
+        ],
+        build_steps=[
+            "cd phal",
+            f"meson setup builddir --prefix={prefix} -Dtests=disabled -Dbuild_dtb_only=false",
+            "ninja -C builddir",
+            "ninja -C builddir install",
+        ],
+    ),
     "openbmc/gpioplus": PackageDef(
         build_type="meson",
         config_flags=[
