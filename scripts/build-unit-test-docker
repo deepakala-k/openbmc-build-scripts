@@ -542,9 +542,8 @@ FROM {docker_base_img_name}
             return
 
         # Ask Github for all the branches.
-        lookup = git(
-            "ls-remote", "--heads", f"https://github.com/{self.package}"
-        )
+        git_url = f"https://github.com/{self.package}"
+        lookup = git("ls-remote", "--heads", git_url)
 
         # Find the branch matching {branch} (or fallback to master).
         #   This section is locked because we are modifying the PackageDef.
@@ -762,6 +761,7 @@ class Docker:
                 )
             ),
             _err_to_out=True,
+            _env=os.environ,
         )
 
 
@@ -928,6 +928,7 @@ RUN apt-get update && apt-get dist-upgrade -yy && apt-get install -yy \
     curl \
     dbus \
     device-tree-compiler \
+    libfdt-dev \
     flex \
     g++-14 \
     gcc-14 \

@@ -73,6 +73,20 @@ export BRANCH
 DOCKER_IMG_NAME=$(./scripts/build-unit-test-docker)
 export DOCKER_IMG_NAME
 
+# Clone hostfw-src on the host where ~/.ssh/ is available.
+# The source tree is placed in $WORKSPACE and mounted into the container
+# via the existing -v "${WORKSPACE}":"${DOCKER_WORKDIR}" volume mount.
+# Always do a fresh clone to avoid stale state from a previous run, unless
+# UNIT_TEST_PKG=hostfw-src in which case the user owns that directory.
+if [ "${UNIT_TEST_PKG}" = "hostfw-src" ]; then
+    echo "UNIT_TEST_PKG=hostfw-src, using existing ${WORKSPACE}/hostfw-src"
+else
+    echo "Cloning hostfw-src into ${WORKSPACE}/hostfw-src"
+    rm -rf "${WORKSPACE}/hostfw-src"
+    git clone git@github.ibm.com:open-power/hostfw-src.git \
+        "${WORKSPACE}/hostfw-src"
+fi
+
 # Allow the user to pass options through to unit-test.py:
 #   EXTRA_UNIT_TEST_ARGS="-r 100" ...
 EXTRA_UNIT_TEST_ARGS="${EXTRA_UNIT_TEST_ARGS:+,${EXTRA_UNIT_TEST_ARGS/ /,}}"
@@ -106,18 +120,35 @@ fi
 # the env to allow the home mount to work (no impact on non-podman systems)
 export PODMAN_USERNS="keep-id"
 
+# Build and install hostfw-src/phal inside the container before running tests.
+# The source was cloned on the host and is available via the workspace mount.
+# Tests are always disabled here — phal is being installed as a dependency.
+# unit-test.py handles running phal's own tests when UNIT_TEST_PKG=hostfw-src.
+HOSTFW_PRE_CMD="cd ${DOCKER_WORKDIR}/hostfw-src && \
+pip3 install --break-system-packages --root-user-action=ignore networkx && \
+cd phal && \
+PYTHONPATH=\$(pwd)/../ekb/public/common/generic/tools/sbe_tools/targeting \
+    meson setup builddir --prefix=/usr/local && \
+PYTHONPATH=\$(pwd)/../ekb/public/common/generic/tools/sbe_tools/targeting \
+    ninja -C builddir && \
+sudo ninja -C builddir install && \
+sudo ldconfig && \
+cd ${DOCKER_WORKDIR} && "
+
 # shellcheck disable=SC2086 # ${PROXY_ENV} and ${EXTRA_DOCKER_RUN_ARGS} are
 # meant to be split
 docker run --cap-add=sys_admin --rm=true \
     --privileged=true \
     ${PROXY_ENV} \
     -u "$USER" \
-    -w "${DOCKER_WORKDIR}" -v "${WORKSPACE}":"${DOCKER_WORKDIR}" \
+    -w "${DOCKER_WORKDIR}" -v "${HOME}:${HOME}" \
+    -v "${WORKSPACE}":"${DOCKER_WORKDIR}" \
     -e "MAKEFLAGS=${MAKEFLAGS}" \
     ${EXTRA_DOCKER_RUN_ARGS:-} \
     -${INTERACTIVE:+i}t "${DOCKER_IMG_NAME}" \
-    "${UNIT_TEST_SCRIPT_DIR}/${DBUS_UNIT_TEST_PY}" -u "${UNIT_TEST}" \
-    -f "${DBUS_SYS_CONFIG_FILE}"
+    /bin/bash -c "${HOSTFW_PRE_CMD}\
+${UNIT_TEST_SCRIPT_DIR}/${DBUS_UNIT_TEST_PY} -u ${UNIT_TEST} \
+-f ${DBUS_SYS_CONFIG_FILE}"
 
 # Timestamp for build
 echo "Unit test build completed, $(date)"
