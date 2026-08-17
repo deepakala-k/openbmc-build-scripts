@@ -92,11 +92,17 @@ fi
 EXTRA_UNIT_TEST_ARGS="${EXTRA_UNIT_TEST_ARGS:+,${EXTRA_UNIT_TEST_ARGS/ /,}}"
 
 # Unit test and parameters
+# When testing hostfw-src itself, point unit-test.py at the phal subdirectory
+# which contains the meson.build — the hostfw-src root has no build system.
 if [ "${INTERACTIVE}" ]; then
     UNIT_TEST="/bin/bash"
 else
+    UNIT_TEST_PKG_PATH="${UNIT_TEST_PKG}"
+    if [ "${UNIT_TEST_PKG}" = "hostfw-src" ]; then
+        UNIT_TEST_PKG_PATH="hostfw-src/phal"
+    fi
     UNIT_TEST="${UNIT_TEST_SCRIPT_DIR}/${UNIT_TEST_PY},-w,${DOCKER_WORKDIR},\
--p,${UNIT_TEST_PKG},-b,$BRANCH,\
+-p,${UNIT_TEST_PKG_PATH},-b,$BRANCH,\
 -v${TEST_ONLY:+,-t}${NO_FORMAT_CODE:+,-n}${NO_CPPCHECK:+,--no-cppcheck}\
 ${EXTRA_UNIT_TEST_ARGS}"
 fi
@@ -120,20 +126,34 @@ fi
 # the env to allow the home mount to work (no impact on non-podman systems)
 export PODMAN_USERNS="keep-id"
 
-# Build and install hostfw-src/phal inside the container before running tests.
+# Prepare hostfw-src/phal inside the container before running tests.
 # The source was cloned on the host and is available via the workspace mount.
-# Tests are always disabled here — phal is being installed as a dependency.
-# unit-test.py handles running phal's own tests when UNIT_TEST_PKG=hostfw-src.
-HOSTFW_PRE_CMD="cd ${DOCKER_WORKDIR}/hostfw-src && \
+#
+# PYTHONPATH is set via -e on docker run so that phal's codegen scripts
+# (attrtool/targtool) can import 'targetutils' from sbe_tools/targeting/
+# regardless of how they are invoked (directly or via meson/ninja subprocesses).
+#
+# When UNIT_TEST_PKG != hostfw-src: build and install phal as a dependency.
+# When UNIT_TEST_PKG = hostfw-src: skip install; unit-test.py builds phal via
+#   the hostfw-src/phal subdirectory (see UNIT_TEST_PKG_PATH above).
+PHAL_PYTHONPATH="${DOCKER_WORKDIR}/hostfw-src/ekb/public/common/generic/tools/sbe_tools/targeting"
+
+HOSTFW_PREAMBLE="cd ${DOCKER_WORKDIR}/hostfw-src && \
 pip3 install --break-system-packages --root-user-action=ignore networkx && \
-cd phal && \
-PYTHONPATH=\$(pwd)/../ekb/public/common/generic/tools/sbe_tools/targeting \
-    meson setup builddir --prefix=/usr/local && \
-PYTHONPATH=\$(pwd)/../ekb/public/common/generic/tools/sbe_tools/targeting \
-    ninja -C builddir && \
+sudo sh -c 'printf \"prefix=/usr\nlibdir=\${prefix}/lib64\nincludedir=\${prefix}/include\n\nName: libfdt\nDescription: Flat Device Tree library\nVersion: 0\nLibs: -L\${libdir} -lfdt\nCflags: -I\${includedir}\n\" \
+    > /usr/local/lib/pkgconfig/libfdt.pc' && \
+cd ${DOCKER_WORKDIR} && "
+
+if [ "${UNIT_TEST_PKG}" = "hostfw-src" ]; then
+    HOSTFW_PRE_CMD="${HOSTFW_PREAMBLE}"
+else
+    HOSTFW_PRE_CMD="${HOSTFW_PREAMBLE}cd ${DOCKER_WORKDIR}/hostfw-src/phal && \
+meson setup builddir --prefix=/usr/local && \
+ninja -C builddir && \
 sudo ninja -C builddir install && \
 sudo ldconfig && \
 cd ${DOCKER_WORKDIR} && "
+fi
 
 # shellcheck disable=SC2086 # ${PROXY_ENV} and ${EXTRA_DOCKER_RUN_ARGS} are
 # meant to be split
@@ -144,6 +164,7 @@ docker run --cap-add=sys_admin --rm=true \
     -w "${DOCKER_WORKDIR}" -v "${HOME}:${HOME}" \
     -v "${WORKSPACE}":"${DOCKER_WORKDIR}" \
     -e "MAKEFLAGS=${MAKEFLAGS}" \
+    -e "PYTHONPATH=${PHAL_PYTHONPATH}" \
     ${EXTRA_DOCKER_RUN_ARGS:-} \
     -${INTERACTIVE:+i}t "${DOCKER_IMG_NAME}" \
     /bin/bash -c "${HOSTFW_PRE_CMD}\
